@@ -105,6 +105,44 @@ def _pdf_bytes_to_text(data: bytes) -> tuple[str, str | None]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def build_from_file(file_path: str) -> tuple[int, str | None]:
+    """Build FAISS index from a local PDF file path.
+
+    Returns:
+        (chunk_count, None)  on success
+        (0, error_message)   on failure
+    """
+    global _vectorstore, _loaded_from_disk
+
+    try:
+        with open(file_path, "rb") as f:
+            pdf_bytes = f.read()
+    except Exception as e:
+        return 0, f"ファイルの読み込みに失敗しました: {e}"
+
+    full_text, err = _pdf_bytes_to_text(pdf_bytes)
+    if err:
+        return 0, err
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=150,
+        separators=["\n\n", "\n", " ", ""],
+    )
+    docs = splitter.create_documents([full_text])
+    if not docs:
+        return 0, "テキストのチャンク分割に失敗しました。"
+
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    store = FAISS.from_documents(docs, embeddings)
+
+    _save_to_disk(store)
+    _vectorstore = store
+    _loaded_from_disk = False
+
+    return len(docs), None
+
+
 def build_from_url() -> tuple[int, str | None]:
     """Fetch EU AI Act PDF, (re)build the FAISS index, and save it to disk.
 

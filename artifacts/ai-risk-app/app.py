@@ -56,8 +56,41 @@ def get_risk_icon(level: str) -> str:
 
 # ── EU AI Act Vector Store Update ─────────────────────────────────────────────
 
+def update_eu_ai_act_from_file(file_obj):
+    """Build FAISS vector store from an uploaded EU AI Act PDF file."""
+    if file_obj is None:
+        yield gr.update(
+            value="⚠️ PDFファイルが選択されていません。",
+            visible=True,
+        )
+        return
+
+    yield gr.update(
+        value="⏳ アップロードされたPDFを解析中…（数十秒かかることがあります）",
+        visible=True,
+    )
+
+    chunk_count, err = vs.build_from_file(file_obj.name)
+
+    if err:
+        yield gr.update(
+            value=f"❌ EU AI Actの登録に失敗しました。\n{err}",
+            visible=True,
+        )
+        return
+
+    yield gr.update(
+        value=(
+            f"✅ EU AI Act ベクトルデータベースを構築しました（ファイルから）。\n"
+            f"チャンク数: {chunk_count}\n"
+            f"次回以降のリスク評価でRAGによる条文参照が有効になります。"
+        ),
+        visible=True,
+    )
+
+
 def update_eu_ai_act():
-    """Fetch EU AI Act PDF and rebuild the FAISS vector store."""
+    """Fetch EU AI Act PDF from URL and rebuild the FAISS vector store."""
     yield gr.update(
         value=(
             f"⏳ EU AI Act PDFを取得・解析中…\n"
@@ -71,7 +104,12 @@ def update_eu_ai_act():
 
     if err:
         yield gr.update(
-            value=f"❌ EU AI Actの登録に失敗しました。\n{err}",
+            value=(
+                f"❌ URLからの取得に失敗しました。\n{err}\n\n"
+                f"💡 ヒント: EUR-Lexサーバーはクラウド環境からのアクセスをブロックする場合があります。\n"
+                f"「📤 PDFファイルから登録」を使って手動でPDFをアップロードしてください。\n"
+                f"PDF取得元: {EU_AI_ACT_URL}"
+            ),
             visible=True,
         )
         return
@@ -407,29 +445,42 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     # ── EU AI Act Vector Store Section ────────────────────────────────────────
     gr.Markdown("## 🗄️ EU AI Act ドキュメント登録（RAGベクトルDB）")
     gr.Markdown(
-        f"リスク評価の前に、EU AI Act の最新PDFをベクトルデータベースに登録してください。\n\n"
-        f"登録元: [`{EU_AI_ACT_URL}`]({EU_AI_ACT_URL})"
+        "リスク評価の前に、EU AI Act の PDF をベクトルデータベースに登録してください。\n\n"
+        "**推奨**: 以下からPDFをダウンロードして「📤 PDFファイルから登録」でアップロードしてください。\n\n"
+        f"PDF取得元: [`{EU_AI_ACT_URL}`]({EU_AI_ACT_URL})"
     )
 
     with gr.Row():
-        update_btn = gr.Button(
-            "🔄 EU AI Actの情報を更新する",
+        eu_pdf_input = gr.File(
+            label="EU AI Act PDFをアップロード",
+            file_types=[".pdf"],
+            scale=3,
+        )
+        upload_btn = gr.Button(
+            "📤 PDFファイルから登録",
             variant="primary",
             scale=1,
+            min_width=200,
+        )
+
+    with gr.Row():
+        update_btn = gr.Button(
+            "🔄 URLから取得（クラウド環境では失敗する場合あり）",
+            variant="secondary",
+            scale=1,
             min_width=280,
-            elem_classes=["update-btn"],
         )
-        update_status = gr.Textbox(
-            label="登録ステータス",
-            value=(
-                "✅ 既存インデックスを読み込みました — すぐにリスク評価が利用可能です。"
-                if vs.was_loaded_from_disk()
-                else "⚠️ 未登録 — 「🔄 EU AI Actの情報を更新する」を押してください。"
-            ),
-            interactive=False,
-            scale=3,
-            visible=True,
-        )
+
+    update_status = gr.Textbox(
+        label="登録ステータス",
+        value=(
+            "✅ 既存インデックスを読み込みました — すぐにリスク評価が利用可能です。"
+            if vs.was_loaded_from_disk()
+            else "⚠️ 未登録 — PDFをアップロードして「📤 PDFファイルから登録」を押してください。"
+        ),
+        interactive=False,
+        visible=True,
+    )
 
     gr.Markdown("---")
 
@@ -520,6 +571,12 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
         )
 
     # ── Event Bindings ────────────────────────────────────────────────────────
+    upload_btn.click(
+        fn=update_eu_ai_act_from_file,
+        inputs=[eu_pdf_input],
+        outputs=[update_status],
+    )
+
     update_btn.click(
         fn=update_eu_ai_act,
         inputs=[],
