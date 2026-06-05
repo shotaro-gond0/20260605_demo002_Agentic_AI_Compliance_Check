@@ -1,4 +1,4 @@
-"""Gradio UI for Agentic AI Risk Assessment."""
+"""Gradio UI for Agentic AI Risk Assessment (EU AI Act RAG edition)."""
 from __future__ import annotations
 
 import os
@@ -16,6 +16,7 @@ from graph import (
     AppState,
     ExtractedInfo,
 )
+import vectorstore as vs
 
 FIELD_KEYS = [
     "overview",
@@ -50,6 +51,38 @@ def get_risk_icon(level: str) -> str:
     return "🟢"
 
 
+# ── EU AI Act Vector Store Update ─────────────────────────────────────────────
+
+def update_eu_ai_act():
+    """Fetch EU AI Act PDF and rebuild the FAISS vector store."""
+    yield gr.update(
+        value=(
+            f"⏳ EU AI Act PDFを取得・解析中…\n"
+            f"取得元: {EU_AI_ACT_URL}\n"
+            f"（PDFは約140ページのため、数十秒かかることがあります）"
+        ),
+        visible=True,
+    )
+
+    chunk_count, err = vs.build_from_url()
+
+    if err:
+        yield gr.update(
+            value=f"❌ EU AI Actの登録に失敗しました。\n{err}",
+            visible=True,
+        )
+        return
+
+    yield gr.update(
+        value=(
+            f"✅ EU AI Act ベクトルデータベースを構築しました。\n"
+            f"チャンク数: {chunk_count} ／ 取得元: {EU_AI_ACT_URL}\n"
+            f"次回以降のリスク評価でRAGによる条文参照が有効になります。"
+        ),
+        visible=True,
+    )
+
+
 # ── Step 1: Extract ───────────────────────────────────────────────────────────
 
 def run_extraction(file_obj):
@@ -74,7 +107,10 @@ def run_extraction(file_obj):
 
     if not minutes_text.strip():
         return (
-            gr.update(value="❌ テキストを抽出できませんでした。別のファイルをお試しください。", visible=True),
+            gr.update(
+                value="❌ テキストを抽出できませんでした。別のファイルをお試しください。",
+                visible=True,
+            ),
             *[""] * 6,
             gr.update(visible=False),
             gr.update(visible=False),
@@ -125,14 +161,29 @@ def run_extraction(file_obj):
 
 def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats, purposes):
     """
-    Sub-agent flow:
-      1. Fetch EU AI Act PDF from EUR-Lex (fetch_eu_ai_act node)
-      2. Extract Articles 5 / 6 / 50
-      3. LLM judges risk using ONLY the fetched text (risk_assess node)
+    LangGraph risk flow:
+      fetch_eu_ai_act_node  — multi-query RAG retrieval from FAISS vector store
+      risk_assess_node      — LLM judges risk using ONLY retrieved chunks
     """
     if not any([overview, users, data_subjects, input_cats, output_cats, purposes]):
         return (
-            gr.update(value="⚠️ まずファイルをアップロードして情報を抽出してください。", visible=True),
+            gr.update(
+                value="⚠️ まずファイルをアップロードして情報を抽出してください。",
+                visible=True,
+            ),
+            gr.update(visible=False),
+            gr.update(visible=False),
+        )
+
+    if not vs.is_ready():
+        return (
+            gr.update(
+                value=(
+                    "⚠️ EU AI Actのベクトルデータベースが未登録です。\n"
+                    "画面上部の「🔄 EU AI Actの情報を更新する」ボタンを先に押してください。"
+                ),
+                visible=True,
+            ),
             gr.update(visible=False),
             gr.update(visible=False),
         )
@@ -164,7 +215,6 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
             gr.update(visible=False),
         )
 
-    # Error from fetch or assess node
     if result.get("error"):
         return (
             gr.update(value=f"❌ {result['error']}", visible=True),
@@ -194,16 +244,18 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 {basis}
 
 ---
-*判定根拠: [EU AI Act — Regulation (EU) 2024/1689]({EU_AI_ACT_URL}) より取得した条文テキストのみを使用*
+*判定根拠: EU AI Act公式PDFから構築したRAGベクトルデータベースの検索結果のみを使用*
+*出典: [Regulation (EU) 2024/1689]({EU_AI_ACT_URL})*
 """
 
-    fetched_summary = (
-        f"✅ EU AI Act PDFを取得・解析し、Article 5 / 6 / 50 を抽出しました。\n"
-        f"取得元: {EU_AI_ACT_URL}"
-    )
-
     return (
-        gr.update(value=fetched_summary, visible=True),
+        gr.update(
+            value=(
+                "✅ リスク評価が完了しました。\n"
+                "（RAGベクトルデータベースから関連条文を取得して判定）"
+            ),
+            visible=True,
+        ),
         gr.update(value=result_md, visible=True),
         gr.update(visible=True),
     )
@@ -214,6 +266,7 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 CSS = """
 #title { text-align: center; }
 .field-box textarea { min-height: 80px; }
+.update-btn { background: #0f4c81 !important; }
 """
 
 with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
@@ -223,13 +276,38 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
         """# 🤖 Agentic AI リスク評価ツール
 
 議事録ファイルから Agentic AI アプリケーション情報を抽出し、
-**EU AI Act（Regulation (EU) 2024/1689）** の条文を直接参照してリスクレベルを判定します。
+**EU AI Act（Regulation (EU) 2024/1689）** の条文をRAGで参照してリスクレベルを判定します。
 
 ---""",
         elem_id="title",
     )
 
-    # ── Status ────────────────────────────────────────────────────────────────
+    # ── EU AI Act Vector Store Section ────────────────────────────────────────
+    gr.Markdown("## 🗄️ EU AI Act ドキュメント登録（RAGベクトルDB）")
+    gr.Markdown(
+        f"リスク評価の前に、EU AI Act の最新PDFをベクトルデータベースに登録してください。\n\n"
+        f"登録元: [`{EU_AI_ACT_URL}`]({EU_AI_ACT_URL})"
+    )
+
+    with gr.Row():
+        update_btn = gr.Button(
+            "🔄 EU AI Actの情報を更新する",
+            variant="primary",
+            scale=1,
+            min_width=280,
+            elem_classes=["update-btn"],
+        )
+        update_status = gr.Textbox(
+            label="登録ステータス",
+            value="⚠️ 未登録 — 「🔄 EU AI Actの情報を更新する」を押してください。",
+            interactive=False,
+            scale=3,
+            visible=True,
+        )
+
+    gr.Markdown("---")
+
+    # ── General Status ────────────────────────────────────────────────────────
     status = gr.Textbox(label="ステータス", interactive=False, visible=False)
 
     # ── Step 1: File Upload ───────────────────────────────────────────────────
@@ -270,12 +348,12 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
             field_boxes.append(tb)
 
         gr.Markdown(
-            f"> ⚖️ リスク評価を実行すると、サブエージェントが "
-            f"[EU AI Act PDF]({EU_AI_ACT_URL}) を取得し、"
-            f"Article 5 / 6 / 50 の条文のみを根拠として判定します。"
+            "> ⚖️ リスク評価を実行すると、**サブエージェント（fetch_eu_ai_act_node）** が "
+            "上記RAGベクトルDBからArticle 5 / 6 / 50 の関連条文を取得し、"
+            "その内容のみを根拠として判定します。"
         )
         assess_btn = gr.Button(
-            "⚖️ リスク評価を実行する（EU AI Act PDF を取得して判定）",
+            "⚖️ リスク評価を実行する（RAG + EU AI Act 条文のみで判定）",
             variant="primary",
             size="lg",
         )
@@ -286,6 +364,12 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
         result_md = gr.Markdown()
 
     # ── Event Bindings ────────────────────────────────────────────────────────
+    update_btn.click(
+        fn=update_eu_ai_act,
+        inputs=[],
+        outputs=[update_status],
+    )
+
     extract_btn.click(
         fn=run_extraction,
         inputs=[file_input],
