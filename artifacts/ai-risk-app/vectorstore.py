@@ -1,13 +1,15 @@
 """FAISS vector store for the EU AI Act document.
 
 Lifecycle:
-  Module import   — tries to load a previously saved index from FAISS_INDEX_DIR.
-                    If found, is_ready() returns True immediately without any
-                    network access or re-embedding.
+  Module import    — tries to load a previously saved index from FAISS_INDEX_DIR.
+                     If found, is_ready() returns True immediately without any
+                     network access or re-embedding.
 
-  build_from_url() — called from the Gradio "更新" button handler.
-                     Fetches the PDF, splits into chunks, embeds, saves the
-                     index to disk, and stores it in the module-level singleton.
+  build_from_web() — called from the Gradio "更新" button handler.
+                     Asynchronously fetches all 113 articles from
+                     artificialintelligenceact.eu, splits into chunks,
+                     embeds, saves the index to disk, and stores it in the
+                     module-level singleton.
                      Calling again clears and rebuilds from scratch.
 
   retrieve(queries) — called by the LangGraph fetch_eu_ai_act_node.
@@ -19,19 +21,20 @@ Lifecycle:
 """
 from __future__ import annotations
 
-import io
+import asyncio
 import os
+import re
 from typing import Optional
 
 import httpx
-from pypdf import PdfReader
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-EU_AI_ACT_URL = (
-    "https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=OJ:L_202401689"
-)
+EU_AI_ACT_SOURCE_URL = "https://artificialintelligenceact.eu/the-act/"
+_ARTICLE_BASE_URL = "https://artificialintelligenceact.eu/article/"
+_ARTICLE_COUNT = 113
+_FETCH_CONCURRENCY = 20
 
 FAISS_INDEX_DIR = "/tmp/eu_ai_act_faiss"
 
@@ -74,39 +77,61 @@ def _try_auto_load() -> None:
 _try_auto_load()
 
 
-# ── PDF helpers ────────────────────────────────────────────────────────────────
+# ── Web scraping helpers ───────────────────────────────────────────────────────
 
-def _fetch_pdf_bytes(url: str) -> tuple[bytes, str | None]:
-    try:
-        with httpx.Client(timeout=60, follow_redirects=True) as client:
-            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            resp.raise_for_status()
-            return resp.content, None
-    except httpx.HTTPStatusError as e:
-        return b"", (
-            f"EU AI Act PDFの取得に失敗しました（HTTP {e.response.status_code}）。\n"
-            f"URL: {url}"
+def _extract_text_from_html(html: str) -> str:
+    """Strip scripts, styles, and tags from HTML; return clean text."""
+    html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
+    body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL)
+    content = body_m.group(1) if body_m else html
+    text = re.sub(r'<[^>]+>', ' ', content)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+async def _fetch_article(
+    client: httpx.AsyncClient,
+    sem: asyncio.Semaphore,
+    n: int,
+) -> str:
+    url = f"{_ARTICLE_BASE_URL}{n}/"
+    async with sem:
+        try:
+            r = await client.get(url, timeout=30)
+            if r.status_code != 200:
+                return ""
+            return f"[Article {n}]\n{_extract_text_from_html(r.text)}"
+        except Exception:
+            return ""
+
+
+async def _scrape_all_articles() -> tuple[str, str | None]:
+    """Fetch all EU AI Act articles asynchronously.
+
+    Returns:
+        (full_text, None)     on success
+        ("", error_message)   on failure
+    """
+    sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+        tasks = [_fetch_article(client, sem, n) for n in range(1, _ARTICLE_COUNT + 1)]
+        results = await asyncio.gather(*tasks)
+
+    texts = [t for t in results if t.strip()]
+    if not texts:
+        return "", (
+            "EU AI Act の条文テキストを取得できませんでした。\n"
+            f"取得元: {EU_AI_ACT_SOURCE_URL}"
         )
-    except Exception as e:
-        return b"", f"EU AI Act PDFへのアクセスに失敗しました: {e}\nURL: {url}"
-
-
-def _pdf_bytes_to_text(data: bytes) -> tuple[str, str | None]:
-    try:
-        reader = PdfReader(io.BytesIO(data))
-        pages = [p.extract_text() or "" for p in reader.pages]
-        text = "\n".join(pages)
-        if not text.strip():
-            return "", "PDFからテキストを抽出できませんでした。"
-        return text, None
-    except Exception as e:
-        return "", f"PDFの解析に失敗しました: {e}"
+    return "\n\n".join(texts), None
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def build_from_file(file_path: str) -> tuple[int, str | None]:
-    """Build FAISS index from a local PDF file path.
+def build_from_web() -> tuple[int, str | None]:
+    """Fetch all EU AI Act articles from the web and (re)build the FAISS index.
 
     Returns:
         (chunk_count, None)  on success
@@ -115,48 +140,15 @@ def build_from_file(file_path: str) -> tuple[int, str | None]:
     global _vectorstore, _loaded_from_disk
 
     try:
-        with open(file_path, "rb") as f:
-            pdf_bytes = f.read()
-    except Exception as e:
-        return 0, f"ファイルの読み込みに失敗しました: {e}"
+        full_text, err = asyncio.run(_scrape_all_articles())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            full_text, err = loop.run_until_complete(_scrape_all_articles())
+        finally:
+            loop.close()
 
-    full_text, err = _pdf_bytes_to_text(pdf_bytes)
-    if err:
-        return 0, err
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=150,
-        separators=["\n\n", "\n", " ", ""],
-    )
-    docs = splitter.create_documents([full_text])
-    if not docs:
-        return 0, "テキストのチャンク分割に失敗しました。"
-
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    store = FAISS.from_documents(docs, embeddings)
-
-    _save_to_disk(store)
-    _vectorstore = store
-    _loaded_from_disk = False
-
-    return len(docs), None
-
-
-def build_from_url() -> tuple[int, str | None]:
-    """Fetch EU AI Act PDF, (re)build the FAISS index, and save it to disk.
-
-    Returns:
-        (chunk_count, None)  on success
-        (0, error_message)   on failure
-    """
-    global _vectorstore, _loaded_from_disk
-
-    pdf_bytes, err = _fetch_pdf_bytes(EU_AI_ACT_URL)
-    if err:
-        return 0, err
-
-    full_text, err = _pdf_bytes_to_text(pdf_bytes)
     if err:
         return 0, err
 

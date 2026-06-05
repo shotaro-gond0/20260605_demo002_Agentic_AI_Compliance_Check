@@ -22,7 +22,7 @@ from langgraph.graph import StateGraph, END
 
 import vectorstore as vs
 
-EU_AI_ACT_URL = vs.EU_AI_ACT_URL
+EU_AI_ACT_URL = vs.EU_AI_ACT_SOURCE_URL
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
