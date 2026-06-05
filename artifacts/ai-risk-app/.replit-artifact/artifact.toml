@@ -15,7 +15,7 @@ paths = [ "/" ]
 localPort = 8000
 
 [services.development]
-run = "chainlit run /home/runner/workspace/artifacts/ai-risk-app/app.py --port 8000 --host 0.0.0.0"
+run = "python /home/runner/workspace/artifacts/ai-risk-app/app.py"
 
 [services.env]
 PORT = "8000"

@@ -1,11 +1,24 @@
-"""Chainlit UI for Agentic AI Risk Assessment."""
+"""Gradio UI for Agentic AI Risk Assessment."""
 from __future__ import annotations
 
-import chainlit as cl
-from chainlit.input_widget import TextInput
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+import gradio as gr
 
 from file_parser import parse_file
-from graph import extract_graph, risk_graph, AppState
+from graph import extract_graph, risk_graph, AppState, ExtractedInfo
+
+FIELD_KEYS = [
+    "overview",
+    "users",
+    "data_subjects",
+    "input_data_categories",
+    "output_data_categories",
+    "output_purposes",
+]
 
 FIELD_LABELS = {
     "overview": "2-1. 概要説明文",
@@ -15,91 +28,57 @@ FIELD_LABELS = {
     "output_data_categories": "2-5. 出力情報の情報種（情報カテゴリ）",
     "output_purposes": "2-6. 出力情報の利用目的",
 }
-FIELD_KEYS = list(FIELD_LABELS.keys())
 
-ACCEPT_TYPES = [
-    "text/plain",
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]
-
-
-def get_state() -> AppState:
-    return cl.user_session.get("app_state") or {}
-
-
-def set_state(state: AppState):
-    cl.user_session.set("app_state", state)
+RISK_ICONS = {
+    "禁止": "🚫",
+    "Prohibited": "🚫",
+    "高リスク": "🔴",
+    "High-Risk": "🔴",
+    "透明性": "🟠",
+    "Transparency": "🟠",
+    "限定": "🟡",
+    "Limited": "🟡",
+}
 
 
-def get_phase() -> str:
-    return cl.user_session.get("phase", "upload")
+def get_risk_icon(level: str) -> str:
+    for key, icon in RISK_ICONS.items():
+        if key in level:
+            return icon
+    return "🟢"
 
 
-def set_phase(phase: str):
-    cl.user_session.set("phase", phase)
+# ── Step 1: Extract ───────────────────────────────────────────────────────────
 
-
-@cl.on_chat_start
-async def on_start():
-    set_phase("upload")
-    await cl.Message(
-        content=(
-            "# 🤖 Agentic AI リスク評価ツール\n\n"
-            "このツールは議事録から **Agentic AIアプリケーション** に関する情報を抽出し、"
-            "**EU AI Act（Regulation (EU) 2024/1689）** に基づくリスクレベルを判定します。\n\n"
-            "---"
+def run_extraction(file_obj):
+    """Parse uploaded file and run LangGraph extraction."""
+    if file_obj is None:
+        return (
+            gr.update(value="⚠️ ファイルが選択されていません。", visible=True),
+            *[""] * 6,
+            gr.update(visible=False),
+            gr.update(visible=False),
         )
-    ).send()
-
-    await _ask_for_file()
-
-
-async def _ask_for_file():
-    """Display explicit file upload UI using AskFileMessage."""
-    files = await cl.AskFileMessage(
-        content=(
-            "### 📁 ステップ1: 議事録ファイルをアップロードしてください\n\n"
-            "対応フォーマット:\n"
-            "- **Microsoft Word** (.docx)\n"
-            "- **PDF** (.pdf)\n"
-            "- **テキスト** (.txt)\n\n"
-            "下の **「Browse files」** ボタンからファイルを選択してください。"
-        ),
-        accept=ACCEPT_TYPES,
-        max_size_mb=20,
-        timeout=300,
-    ).send()
-
-    if not files:
-        await cl.Message(content="⚠️ ファイルが選択されませんでした。ページを更新して再度お試しください。").send()
-        return
-
-    await _process_file(files[0])
-
-
-async def _process_file(file: cl.types.AskFileResponse):
-    filename = file.name
-    await cl.Message(content=f"📄 **{filename}** を受け取りました。テキストを抽出中...").send()
 
     try:
-        minutes_text = parse_file(file.path, filename)
+        minutes_text = parse_file(file_obj.name, os.path.basename(file_obj.name))
     except Exception as e:
-        await cl.Message(content=f"❌ ファイルの読み込みに失敗しました:\n```\n{e}\n```").send()
-        return
+        return (
+            gr.update(value=f"❌ ファイル読み込みエラー: {e}", visible=True),
+            *[""] * 6,
+            gr.update(visible=False),
+            gr.update(visible=False),
+        )
 
     if not minutes_text.strip():
-        await cl.Message(
-            content="❌ ファイルからテキストを抽出できませんでした。別のファイルをお試しください。"
-        ).send()
-        return
-
-    await cl.Message(
-        content=(
-            f"✅ テキスト抽出完了（{len(minutes_text):,} 文字）\n\n"
-            "🔍 **Agentic AI関連情報を抽出中...** GPT-4oで解析しています。少々お待ちください。"
+        return (
+            gr.update(value="❌ テキストを抽出できませんでした。別のファイルをお試しください。", visible=True),
+            *[""] * 6,
+            gr.update(visible=False),
+            gr.update(visible=False),
         )
-    ).send()
+
+    status_msg = f"🔍 テキスト抽出完了（{len(minutes_text):,} 文字）。GPT-4oで解析中..."
 
     initial_state: AppState = {
         "minutes_text": minutes_text,
@@ -110,161 +89,207 @@ async def _process_file(file: cl.types.AskFileResponse):
     }
 
     try:
-        async with cl.Step(name="LangGraph: 議事録解析・情報抽出") as step:
-            result = extract_graph.invoke(initial_state)
-            step.output = "✅ 情報抽出が完了しました"
+        result = extract_graph.invoke(initial_state)
     except Exception as e:
-        await cl.Message(content=f"❌ 情報抽出中にエラーが発生しました:\n```\n{e}\n```").send()
-        return
+        return (
+            gr.update(value=f"❌ 情報抽出エラー: {e}", visible=True),
+            *[""] * 6,
+            gr.update(visible=False),
+            gr.update(visible=False),
+        )
 
     if result.get("error"):
-        await cl.Message(content=f"❌ エラー: {result['error']}").send()
-        return
-
-    set_state(result)
-    set_phase("editing")
-    await _show_edit_form(result["extracted"])
-
-
-async def _show_edit_form(extracted: dict):
-    await cl.Message(
-        content=(
-            "## ✅ ステップ2・3: 抽出結果の確認・編集\n\n"
-            "以下は議事録から抽出した情報です。\n"
-            "右上の ⚙️（設定）アイコンをクリックすると、各項目を編集できます。\n\n"
-            "編集が完了したら、このチャットに **`OK`** または **`送信`** と入力してください。"
+        return (
+            gr.update(value=f"❌ エラー: {result['error']}", visible=True),
+            *[""] * 6,
+            gr.update(visible=False),
+            gr.update(visible=False),
         )
-    ).send()
 
-    widgets = [
-        TextInput(
-            id=key,
-            label=FIELD_LABELS[key],
-            initial=extracted.get(key, ""),
-            multiline=True,
-        )
-        for key in FIELD_KEYS
-    ]
+    extracted = result["extracted"]
+    values = [extracted.get(k, "") for k in FIELD_KEYS]
 
-    await cl.ChatSettings(widgets).send()
-
-    await cl.Message(
-        content=(
-            "---\n"
-            "**現在の抽出内容（プレビュー）:**\n\n"
-            + "\n\n".join(
-                f"**{FIELD_LABELS[k]}**\n> {extracted.get(k, '（未入力）')}"
-                for k in FIELD_KEYS
-            )
-            + "\n\n---\n"
-            "⬆️ 上記の内容を確認し、必要に応じて ⚙️ から編集してください。\n"
-            "完了したら **`OK`** または **`送信`** と入力してください。"
-        )
-    ).send()
-
-
-@cl.on_settings_update
-async def on_settings_update(settings: dict):
-    cl.user_session.set("current_settings", settings)
-
-
-@cl.on_message
-async def on_message(message: cl.Message):
-    phase = get_phase()
-
-    if phase == "editing":
-        await _handle_editing(message)
-    elif phase == "done":
-        await cl.Message(
-            content="💡 別の議事録を評価する場合は、ページを更新して新しいチャットを開始してください。"
-        ).send()
-
-
-async def _handle_editing(message: cl.Message):
-    text = message.content.strip().lower()
-    confirm_words = {"ok", "送信", "submit", "完了", "done", "yes", "はい", "確定", "実行"}
-    if text not in confirm_words:
-        await cl.Message(
-            content=(
-                "💡 内容を編集後、**`OK`** または **`送信`** と入力してリスク評価を開始してください。\n"
-                "（⚙️ ボタンから各項目を編集できます）"
-            )
-        ).send()
-        return
-
-    settings = cl.user_session.get("current_settings") or {}
-    state = get_state()
-    original = state.get("extracted") or {}
-
-    edited = {
-        key: settings.get(key, original.get(key, ""))
-        for key in FIELD_KEYS
-    }
-    state["edited"] = edited
-    set_state(state)
-
-    edited_summary = "\n\n".join(
-        f"**{FIELD_LABELS[k]}**\n{edited[k] or '（未入力）'}"
-        for k in FIELD_KEYS
+    return (
+        gr.update(value="✅ 情報抽出が完了しました。内容を確認・編集してからリスク評価を実行してください。", visible=True),
+        *values,
+        gr.update(visible=True),   # edit_section
+        gr.update(visible=False),  # result_section
     )
-    await cl.Message(
-        content=f"## 📝 ステップ3: 編集確定内容\n\n{edited_summary}"
-    ).send()
 
-    await cl.Message(
-        content=(
-            "⚖️ **ステップ4: EU AI Act リスクレベルを判定中...**\n"
-            "第5条・第6条・第50条に基づいて評価しています。少々お待ちください。"
+
+# ── Step 2: Risk Assessment ───────────────────────────────────────────────────
+
+def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats, purposes):
+    """Run EU AI Act risk assessment on the edited fields."""
+    if not any([overview, users, data_subjects, input_cats, output_cats, purposes]):
+        return (
+            gr.update(value="⚠️ まずファイルをアップロードして情報を抽出してください。", visible=True),
+            gr.update(visible=False),
         )
-    ).send()
+
+    edited: ExtractedInfo = {
+        "overview": overview,
+        "users": users,
+        "data_subjects": data_subjects,
+        "input_data_categories": input_cats,
+        "output_data_categories": output_cats,
+        "output_purposes": purposes,
+    }
+
+    state: AppState = {
+        "minutes_text": "",
+        "extracted": None,
+        "edited": edited,
+        "risk": None,
+        "error": None,
+    }
 
     try:
-        async with cl.Step(name="LangGraph: EU AI Act リスク評価") as step:
-            result = risk_graph.invoke(state)
-            step.output = "✅ リスク評価が完了しました"
+        result = risk_graph.invoke(state)
     except Exception as e:
-        await cl.Message(content=f"❌ リスク評価中にエラーが発生しました:\n```\n{e}\n```").send()
-        return
+        return (
+            gr.update(value=f"❌ リスク評価エラー: {e}", visible=True),
+            gr.update(visible=False),
+        )
 
     if result.get("error"):
-        await cl.Message(content=f"❌ エラー: {result['error']}").send()
-        return
+        return (
+            gr.update(value=f"❌ エラー: {result['error']}", visible=True),
+            gr.update(visible=False),
+        )
 
-    set_state(result)
-    set_phase("done")
-    await _show_risk_result(result["risk"])
-
-
-async def _show_risk_result(risk: dict):
+    risk = result["risk"]
     level = risk.get("risk_level", "不明")
     basis = risk.get("risk_basis", "")
+    icon = get_risk_icon(level)
 
-    if "禁止" in level:
-        icon = "🚫"
-    elif "高リスク" in level or "High-Risk" in level:
-        icon = "🔴"
-    elif "透明性" in level or "Transparency" in level:
-        icon = "🟠"
-    elif "限定" in level or "Limited" in level:
-        icon = "🟡"
-    else:
-        icon = "🟢"
+    result_md = f"""## {icon} EU AI Act リスクレベル判定結果
 
-    await cl.Message(
-        content=(
-            f"---\n"
-            f"## {icon} ステップ4・5: EU AI Act リスクレベル判定結果\n\n"
-            f"### リスクレベル\n"
-            f"**{level}**\n\n"
-            f"### 判定根拠（第6条中心）\n\n"
-            f"{basis}\n\n"
-            f"---\n"
-            f"### 参照条文\n"
-            f"- **第5条 (Article 5)**: Prohibited artificial intelligence practices（禁止されるAIの実践）\n"
-            f"- **第6条 (Article 6)**: Classification rules for high-risk AI systems（高リスクAIシステムの分類規則）\n"
-            f"- **第50条 (Article 50)**: Transparency obligations for providers and deployers（透明性義務）\n\n"
-            f"*出典: EU AI Act — Regulation (EU) 2024/1689*\n\n"
-            f"---\n"
-            f"💡 別の議事録を評価する場合は、ページを更新して新しいチャットを開始してください。"
+### リスクレベル
+**{level}**
+
+### 判定根拠（第6条中心）
+
+{basis}
+
+---
+### 参照条文
+- **第5条 (Article 5)**: Prohibited artificial intelligence practices
+- **第6条 (Article 6)**: Classification rules for high-risk AI systems
+- **第50条 (Article 50)**: Transparency obligations for providers and deployers
+
+*出典: EU AI Act — Regulation (EU) 2024/1689*
+"""
+
+    return (
+        gr.update(value="✅ リスク評価が完了しました。", visible=True),
+        gr.update(value=result_md, visible=True),
+    )
+
+
+# ── Gradio UI ─────────────────────────────────────────────────────────────────
+
+CSS = """
+#title { text-align: center; }
+#status_box textarea { font-size: 14px; }
+.section-header { 
+    background: #1e293b; 
+    padding: 8px 16px; 
+    border-radius: 8px; 
+    margin: 8px 0; 
+}
+.field-box textarea { min-height: 80px; }
+"""
+
+with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    gr.Markdown(
+        """# 🤖 Agentic AI リスク評価ツール
+
+議事録ファイルから Agentic AI アプリケーション情報を抽出し、
+**EU AI Act（Regulation (EU) 2024/1689）** に基づくリスクレベルを判定します。
+
+---""",
+        elem_id="title",
+    )
+
+    # ── Status ────────────────────────────────────────────────────────────────
+    status = gr.Textbox(
+        label="ステータス",
+        interactive=False,
+        visible=False,
+        elem_id="status_box",
+    )
+
+    # ── Step 1: File Upload ───────────────────────────────────────────────────
+    gr.Markdown("## 📁 ステップ 1 : 議事録ファイルのアップロード")
+    gr.Markdown(
+        "対応フォーマット: **Microsoft Word** (.docx) / **PDF** (.pdf) / **テキスト** (.txt)"
+    )
+
+    with gr.Row():
+        file_input = gr.File(
+            label="議事録ファイルを選択",
+            file_types=[".docx", ".pdf", ".txt", ".text"],
+            scale=4,
         )
-    ).send()
+        extract_btn = gr.Button(
+            "📄 情報を抽出する",
+            variant="primary",
+            scale=1,
+            min_width=160,
+        )
+
+    # ── Step 2: Editable Fields ───────────────────────────────────────────────
+    with gr.Group(visible=False) as edit_section:
+        gr.Markdown("## ✏️ ステップ 2 : 抽出結果の確認・編集")
+        gr.Markdown(
+            "抽出された内容を確認し、必要に応じて編集してください。"
+            "編集後、**「リスク評価を実行する」** ボタンを押してください。"
+        )
+
+        field_boxes = []
+        for key in FIELD_KEYS:
+            tb = gr.Textbox(
+                label=FIELD_LABELS[key],
+                lines=3,
+                interactive=True,
+                elem_classes=["field-box"],
+            )
+            field_boxes.append(tb)
+
+        assess_btn = gr.Button(
+            "⚖️ リスク評価を実行する",
+            variant="primary",
+            size="lg",
+        )
+
+    # ── Step 3: Risk Result ───────────────────────────────────────────────────
+    with gr.Group(visible=False) as result_section:
+        gr.Markdown("## 📊 ステップ 3 : EU AI Act リスクレベル判定結果")
+        result_md = gr.Markdown()
+
+    # ── Event Bindings ────────────────────────────────────────────────────────
+    extract_btn.click(
+        fn=run_extraction,
+        inputs=[file_input],
+        outputs=[status, *field_boxes, edit_section, result_section],
+    )
+
+    assess_btn.click(
+        fn=run_risk_assessment,
+        inputs=field_boxes,
+        outputs=[status, result_section],
+    )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        show_error=True,
+        theme=gr.themes.Soft(primary_hue="blue"),
+        css=CSS,
+    )

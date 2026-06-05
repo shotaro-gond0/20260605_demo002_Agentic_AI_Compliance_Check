@@ -54,4 +54,4 @@ externalPort = 8081
 
 [nix]
 channel = "stable-25_05"
-packages = ["postgresql"]
+packages = ["ffmpeg-full", "postgresql"]

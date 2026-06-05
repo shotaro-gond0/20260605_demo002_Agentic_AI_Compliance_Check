@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "asyncpg>=0.31.0",
     "chainlit>=2.11.1",
+    "gradio>=6.16.0",
     "httpx>=0.28.1",
     "langchain>=1.3.4",
     "langchain-community>=0.4.2",
