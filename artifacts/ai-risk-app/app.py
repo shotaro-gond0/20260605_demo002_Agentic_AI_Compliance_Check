@@ -13,6 +13,8 @@ from graph import (
     EU_AI_ACT_URL,
     extract_graph,
     risk_graph,
+    fetch_eu_ai_act_node,
+    risk_assess_node,
     AppState,
     ExtractedInfo,
 )
@@ -159,34 +161,35 @@ def run_extraction(file_obj):
 
 # ── Step 2: Risk Assessment ───────────────────────────────────────────────────
 
+def _no_yield(msg: str):
+    """Helper: single-yield tuple for early-exit error cases (4 outputs)."""
+    return (
+        gr.update(value=msg, visible=True),
+        gr.update(value="", visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+    )
+
+
 def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats, purposes):
+    """Generator: yields step-by-step status so the UI updates at each node boundary.
+
+    Outputs (4):  status | llm_status | result_md | result_section
+    Nodes called directly (not via risk_graph.invoke) to enable per-step yields:
+      1. fetch_eu_ai_act_node — RAG retrieval from FAISS
+      2. risk_assess_node     — GPT-4o API call
     """
-    LangGraph risk flow:
-      fetch_eu_ai_act_node  — multi-query RAG retrieval from FAISS vector store
-      risk_assess_node      — LLM judges risk using ONLY retrieved chunks
-    """
+    # ── Pre-flight checks ─────────────────────────────────────────────────────
     if not any([overview, users, data_subjects, input_cats, output_cats, purposes]):
-        return (
-            gr.update(
-                value="⚠️ まずファイルをアップロードして情報を抽出してください。",
-                visible=True,
-            ),
-            gr.update(visible=False),
-            gr.update(visible=False),
-        )
+        yield _no_yield("⚠️ まずファイルをアップロードして情報を抽出してください。")
+        return
 
     if not vs.is_ready():
-        return (
-            gr.update(
-                value=(
-                    "⚠️ EU AI Actのベクトルデータベースが未登録です。\n"
-                    "画面上部の「🔄 EU AI Actの情報を更新する」ボタンを先に押してください。"
-                ),
-                visible=True,
-            ),
-            gr.update(visible=False),
-            gr.update(visible=False),
+        yield _no_yield(
+            "⚠️ EU AI Actのベクトルデータベースが未登録です。\n"
+            "画面上部の「🔄 EU AI Actの情報を更新する」ボタンを先に押してください。"
         )
+        return
 
     edited: ExtractedInfo = {
         "overview": overview,
@@ -206,35 +209,63 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
         "error": None,
     }
 
+    # ── Node 1: fetch_eu_ai_act_node（RAG検索）────────────────────────────────
+    yield (
+        gr.update(value="⏳ リスク評価を開始します…", visible=True),
+        gr.update(
+            value="[ 1 / 2 ]  fetch_eu_ai_act_node — RAGベクトルDBを検索中…",
+            visible=True,
+        ),
+        gr.update(visible=False),
+        gr.update(visible=False),
+    )
+
     try:
-        result = risk_graph.invoke(state)
+        state = fetch_eu_ai_act_node(state)
     except Exception as e:
-        return (
-            gr.update(value=f"❌ リスク評価エラー: {e}", visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
-        )
+        yield _no_yield(f"❌ RAG検索エラー: {e}")
+        return
 
-    if result.get("error"):
-        return (
-            gr.update(value=f"❌ {result['error']}", visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
-        )
+    if state.get("error"):
+        yield _no_yield(f"❌ {state['error']}")
+        return
 
-    risk = result.get("risk")
+    # ── Node 2: risk_assess_node（GPT-4o API呼び出し）────────────────────────
+    yield (
+        gr.update(value="⏳ RAG検索完了 — LLMに送信中…", visible=True),
+        gr.update(
+            value=(
+                "[ 1 / 2 ]  fetch_eu_ai_act_node — ✅ 完了\n"
+                "[ 2 / 2 ]  risk_assess_node — GPT-4o (gpt-4o / temperature=0) に"
+                "RAG条文テキストとアプリ情報を送信中…"
+            ),
+            visible=True,
+        ),
+        gr.update(visible=False),
+        gr.update(visible=False),
+    )
+
+    try:
+        state = risk_assess_node(state)
+    except Exception as e:
+        yield _no_yield(f"❌ LLM API呼び出しエラー: {e}")
+        return
+
+    if state.get("error"):
+        yield _no_yield(f"❌ {state['error']}")
+        return
+
+    # ── 結果表示 ──────────────────────────────────────────────────────────────
+    risk = state.get("risk")
     if not risk:
-        return (
-            gr.update(value="❌ リスク評価結果が得られませんでした。", visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
-        )
+        yield _no_yield("❌ リスク評価結果が得られませんでした。")
+        return
 
     level = risk.get("risk_level", "不明")
     basis = risk.get("risk_basis", "")
     icon = get_risk_icon(level)
 
-    result_md = f"""## {icon} EU AI Act リスクレベル判定結果
+    md = f"""## {icon} EU AI Act リスクレベル判定結果
 
 ### リスクレベル
 **{level}**
@@ -248,15 +279,16 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 *出典: [Regulation (EU) 2024/1689]({EU_AI_ACT_URL})*
 """
 
-    return (
+    yield (
+        gr.update(value="✅ リスク評価が完了しました。", visible=True),
         gr.update(
             value=(
-                "✅ リスク評価が完了しました。\n"
-                "（RAGベクトルデータベースから関連条文を取得して判定）"
+                "[ 1 / 2 ]  fetch_eu_ai_act_node — ✅ 完了\n"
+                "[ 2 / 2 ]  risk_assess_node — ✅ 完了  GPT-4o の応答を受信し、リスクレベルを判定しました。"
             ),
             visible=True,
         ),
-        gr.update(value=result_md, visible=True),
+        gr.update(value=md, visible=True),
         gr.update(visible=True),
     )
 
@@ -358,6 +390,13 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
             size="lg",
         )
 
+        llm_status = gr.Textbox(
+            label="🔄 処理ステータス（LangGraph ノード進捗）",
+            interactive=False,
+            lines=2,
+            visible=False,
+        )
+
     # ── Step 3: Risk Result ───────────────────────────────────────────────────
     with gr.Group(visible=False) as result_section:
         gr.Markdown("## 📊 ステップ 3 : EU AI Act リスクレベル判定結果")
@@ -379,7 +418,7 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     assess_btn.click(
         fn=run_risk_assessment,
         inputs=field_boxes,
-        outputs=[status, result_md, result_section],
+        outputs=[status, llm_status, result_md, result_section],
     )
 
 
