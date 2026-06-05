@@ -321,7 +321,7 @@ def download_report(report_state):
     """
     if not report_state:
         yield (
-            gr.update(visible=False),
+            gr.update(value="", visible=False),
             gr.update(value="⚠️ 先にリスク評価を実行してください。", visible=True),
             gr.update(value="⚠️ レポートを生成する前にリスク評価を実行してください。", visible=True),
         )
@@ -329,7 +329,7 @@ def download_report(report_state):
 
     # ── Step 1: generate_pdf() ────────────────────────────────────────────────
     yield (
-        gr.update(visible=False),
+        gr.update(value="", visible=False),
         gr.update(
             value="[ 1 / 2 ]  generate_pdf() — fpdf2 でPDFを構築中…",
             visible=True,
@@ -351,35 +351,37 @@ def download_report(report_state):
         )
     except Exception as e:
         yield (
-            gr.update(visible=False),
+            gr.update(value="", visible=False),
             gr.update(value=f"❌ PDF生成エラー: {e}", visible=True),
             gr.update(value=f"❌ PDFレポートの生成に失敗しました: {e}", visible=True),
         )
         return
 
-    # ── Step 2: gr.File への配信準備 ──────────────────────────────────────────
-    yield (
-        gr.update(visible=False),
-        gr.update(
-            value=(
-                "[ 1 / 2 ]  generate_pdf() — ✅ 完了\n"
-                "[ 2 / 2 ]  gr.File(value=path) — Gradio がブラウザへの配信を準備中…"
-            ),
-            visible=True,
-        ),
-        gr.update(value="⏳ ファイル配信を準備中…", visible=True),
+    # ── Step 2: ダウンロードリンク生成 ────────────────────────────────────────
+    import os as _os
+    filename = _os.path.basename(path)
+    download_html = (
+        f'<div style="padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;'
+        f'border-radius:8px;margin-top:4px;">'
+        f'<a href="/file={path}" download="{filename}" '
+        f'style="color:#0369a1;text-decoration:none;font-weight:600;'
+        f'display:flex;align-items:center;gap:8px;font-size:1em;">'
+        f'📄 {filename}'
+        f'<span style="font-size:0.82em;color:#64748b;font-weight:400;">'
+        f'　← クリックしてダウンロード</span>'
+        f'</a></div>'
     )
 
     yield (
-        gr.update(value=path, visible=True),
+        gr.update(value=download_html, visible=True),
         gr.update(
             value=(
                 "[ 1 / 2 ]  generate_pdf() — ✅ 完了\n"
-                "[ 2 / 2 ]  gr.File(value=path) — ✅ 完了  ブラウザへの配信準備が整いました。"
+                "[ 2 / 2 ]  PDFレポートの準備が完了しました。ファイル名をクリックしてダウンロードしてください。"
             ),
             visible=True,
         ),
-        gr.update(value="✅ PDFレポートの準備が完了しました。上のリンクからダウンロードしてください。", visible=True),
+        gr.update(value="✅ PDFレポートの準備が完了しました。", visible=True),
     )
 
 
@@ -513,11 +515,7 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
             visible=False,
         )
 
-        report_file = gr.File(
-            label="生成されたPDFレポート",
-            visible=False,
-            interactive=False,
-        )
+        report_link = gr.HTML(visible=False)
 
     # ── Event Bindings ────────────────────────────────────────────────────────
     update_btn.click(
@@ -541,7 +539,7 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     download_btn.click(
         fn=download_report,
         inputs=[report_state],
-        outputs=[report_file, download_status, status],
+        outputs=[report_link, download_status, status],
     )
 
 
@@ -553,4 +551,5 @@ if __name__ == "__main__":
         show_error=True,
         theme=gr.themes.Soft(primary_hue="blue"),
         css=CSS,
+        allowed_paths=["/tmp"],
     )
