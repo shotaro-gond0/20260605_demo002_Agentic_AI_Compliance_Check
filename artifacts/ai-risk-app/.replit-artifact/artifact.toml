@@ -10,9 +10,9 @@ name = "react-vite"
 version = "1.0.0"
 
 [[services]]
-name = "web"
-paths = [ "/" ]
 localPort = 8000
+name = "web"
+paths = ["/"]
 
 [services.development]
 run = "python /home/runner/workspace/artifacts/ai-risk-app/app.py"
@@ -21,3 +21,19 @@ run = "python /home/runner/workspace/artifacts/ai-risk-app/app.py"
 PORT = "8000"
 BASE_PATH = "/"
 PYTHONPATH = "/home/runner/workspace/artifacts/ai-risk-app"
+
+[services.production]
+
+[services.production.build]
+args = ["pip", "install", "-r", "artifacts/ai-risk-app/requirements.txt"]
+
+[services.production.run]
+args = ["python", "/home/runner/workspace/artifacts/ai-risk-app/app.py"]
+
+[services.production.run.env]
+PORT = "8000"
+BASE_PATH = "/"
+PYTHONPATH = "/home/runner/workspace/artifacts/ai-risk-app"
+
+[services.production.health.startup]
+path = "/"
