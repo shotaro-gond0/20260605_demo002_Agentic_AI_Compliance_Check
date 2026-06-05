@@ -24,19 +24,12 @@ NOTO_BOLD = os.path.join(FONT_DIR, "NotoSansJP-Bold.ttf")
 
 
 def _ensure_fonts() -> bool:
-    """Download Noto Sans JP fonts if not present. Returns True if available."""
-    if os.path.exists(NOTO_REGULAR) and os.path.exists(NOTO_BOLD):
-        return True
-    os.makedirs(FONT_DIR, exist_ok=True)
-    try:
-        import urllib.request
-        base = "https://github.com/google/fonts/raw/main/ofl/notosansjp/"
-        urllib.request.urlretrieve(base + "NotoSansJP%5Bwght%5D.ttf", NOTO_REGULAR)
-        import shutil
-        shutil.copy(NOTO_REGULAR, NOTO_BOLD)
-        return True
-    except Exception:
-        return False
+    """Check that the bundled Noto Sans JP fonts are present. Returns True if available.
+
+    The fonts (NotoSansJP-Regular.ttf / NotoSansJP-Bold.ttf) are committed to the
+    repository under artifacts/ai-risk-app/fonts/ and require no network access.
+    """
+    return os.path.exists(NOTO_REGULAR) and os.path.exists(NOTO_BOLD)
 
 
 def _get_risk_color(level: str) -> tuple[int, int, int]:
