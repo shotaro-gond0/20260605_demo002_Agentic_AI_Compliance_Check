@@ -17,6 +17,12 @@ FIELD_LABELS = {
 }
 FIELD_KEYS = list(FIELD_LABELS.keys())
 
+ACCEPT_TYPES = [
+    "text/plain",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]
+
 
 def get_state() -> AppState:
     return cl.user_session.get("app_state") or {}
@@ -42,45 +48,38 @@ async def on_start():
             "# 🤖 Agentic AI リスク評価ツール\n\n"
             "このツールは議事録から **Agentic AIアプリケーション** に関する情報を抽出し、"
             "**EU AI Act（Regulation (EU) 2024/1689）** に基づくリスクレベルを判定します。\n\n"
-            "---\n"
-            "### 📁 ステップ1: 議事録ファイルのアップロード\n\n"
-            "対応フォーマット:\n"
-            "- **Microsoft Word** (.docx)\n"
-            "- **PDF** (.pdf)\n"
-            "- **テキスト** (.txt / .text)\n\n"
-            "💡 ファイルをこのチャットに添付してアップロードしてください。"
+            "---"
         )
     ).send()
 
-
-@cl.on_message
-async def on_message(message: cl.Message):
-    phase = get_phase()
-
-    if phase == "upload":
-        await _handle_upload(message)
-    elif phase == "editing":
-        await _handle_editing(message)
-    else:
-        await cl.Message(
-            content="新しい評価を行う場合は、ページを更新してください。"
-        ).send()
+    await _ask_for_file()
 
 
-async def _handle_upload(message: cl.Message):
-    files = message.elements
+async def _ask_for_file():
+    """Display explicit file upload UI using AskFileMessage."""
+    files = await cl.AskFileMessage(
+        content=(
+            "### 📁 ステップ1: 議事録ファイルをアップロードしてください\n\n"
+            "対応フォーマット:\n"
+            "- **Microsoft Word** (.docx)\n"
+            "- **PDF** (.pdf)\n"
+            "- **テキスト** (.txt)\n\n"
+            "下の **「Browse files」** ボタンからファイルを選択してください。"
+        ),
+        accept=ACCEPT_TYPES,
+        max_size_mb=20,
+        timeout=300,
+    ).send()
+
     if not files:
-        await cl.Message(
-            content=(
-                "⚠️ ファイルが添付されていません。\n\n"
-                "Word (.docx)、PDF (.pdf)、またはテキスト (.txt) ファイルを添付してください。"
-            )
-        ).send()
+        await cl.Message(content="⚠️ ファイルが選択されませんでした。ページを更新して再度お試しください。").send()
         return
 
-    file = files[0]
-    filename = file.name
+    await _process_file(files[0])
 
+
+async def _process_file(file: cl.types.AskFileResponse):
+    filename = file.name
     await cl.Message(content=f"📄 **{filename}** を受け取りました。テキストを抽出中...").send()
 
     try:
@@ -167,6 +166,18 @@ async def _show_edit_form(extracted: dict):
 @cl.on_settings_update
 async def on_settings_update(settings: dict):
     cl.user_session.set("current_settings", settings)
+
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    phase = get_phase()
+
+    if phase == "editing":
+        await _handle_editing(message)
+    elif phase == "done":
+        await cl.Message(
+            content="💡 別の議事録を評価する場合は、ページを更新して新しいチャットを開始してください。"
+        ).send()
 
 
 async def _handle_editing(message: cl.Message):

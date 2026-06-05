@@ -5,6 +5,11 @@ enable_telemetry = false
 prompt_playground = false
 speech_to_text = false
 
+[features.spontaneous_file_upload]
+enabled = true
+max_files = 1
+max_size_mb = 20
+
 [UI]
 name = "Agentic AI リスク評価ツール"
 description = "議事録からAgentic AIアプリケーションの情報を抽出し、EU AI Actに基づくリスクレベルを判定します。"
