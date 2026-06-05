@@ -312,15 +312,31 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 # ── Step 3: PDF Download ───────────────────────────────────────────────────────
 
 def download_report(report_state):
-    """Generate a PDF report from the stored risk assessment state.
+    """Generator: yields step-by-step status during PDF generation and file delivery.
 
-    Returns (report_file, status) updates.
+    Outputs (3):  report_file | download_status | status
+    Steps:
+      1. generate_pdf()   — fpdf2 でPDFをメモリ上に構築し一時ファイルへ書き出す
+      2. gr.File(value=)  — Gradio がブラウザへファイルを配信できる状態にする
     """
     if not report_state:
-        return (
+        yield (
             gr.update(visible=False),
+            gr.update(value="⚠️ 先にリスク評価を実行してください。", visible=True),
             gr.update(value="⚠️ レポートを生成する前にリスク評価を実行してください。", visible=True),
         )
+        return
+
+    # ── Step 1: generate_pdf() ────────────────────────────────────────────────
+    yield (
+        gr.update(visible=False),
+        gr.update(
+            value="[ 1 / 2 ]  generate_pdf() — fpdf2 でPDFを構築中…",
+            visible=True,
+        ),
+        gr.update(value="⏳ PDFを生成中…", visible=True),
+    )
+
     try:
         path = generate_pdf(
             risk_level=report_state.get("risk_level", "不明"),
@@ -333,15 +349,38 @@ def download_report(report_state):
             purposes=report_state.get("purposes", ""),
             eu_ai_act_url=EU_AI_ACT_URL,
         )
-        return (
-            gr.update(value=path, visible=True),
-            gr.update(value="✅ PDFレポートを生成しました。", visible=True),
-        )
     except Exception as e:
-        return (
-            gr.update(value=None, visible=False),
+        yield (
+            gr.update(visible=False),
+            gr.update(value=f"❌ PDF生成エラー: {e}", visible=True),
             gr.update(value=f"❌ PDFレポートの生成に失敗しました: {e}", visible=True),
         )
+        return
+
+    # ── Step 2: gr.File への配信準備 ──────────────────────────────────────────
+    yield (
+        gr.update(visible=False),
+        gr.update(
+            value=(
+                "[ 1 / 2 ]  generate_pdf() — ✅ 完了\n"
+                "[ 2 / 2 ]  gr.File(value=path) — Gradio がブラウザへの配信を準備中…"
+            ),
+            visible=True,
+        ),
+        gr.update(value="⏳ ファイル配信を準備中…", visible=True),
+    )
+
+    yield (
+        gr.update(value=path, visible=True),
+        gr.update(
+            value=(
+                "[ 1 / 2 ]  generate_pdf() — ✅ 完了\n"
+                "[ 2 / 2 ]  gr.File(value=path) — ✅ 完了  ブラウザへの配信準備が整いました。"
+            ),
+            visible=True,
+        ),
+        gr.update(value="✅ PDFレポートの準備が完了しました。上のリンクからダウンロードしてください。", visible=True),
+    )
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
@@ -467,6 +506,13 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
                 min_width=220,
             )
 
+        download_status = gr.Textbox(
+            label="🔄 PDF生成ステータス",
+            interactive=False,
+            lines=2,
+            visible=False,
+        )
+
         report_file = gr.File(
             label="生成されたPDFレポート",
             visible=False,
@@ -495,7 +541,7 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     download_btn.click(
         fn=download_report,
         inputs=[report_state],
-        outputs=[report_file, status],
+        outputs=[report_file, download_status, status],
     )
 
 
