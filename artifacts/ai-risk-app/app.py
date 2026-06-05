@@ -9,7 +9,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 import gradio as gr
 
 from file_parser import parse_file
-from graph import extract_graph, risk_graph, AppState, ExtractedInfo
+from graph import (
+    EU_AI_ACT_URL,
+    extract_graph,
+    risk_graph,
+    AppState,
+    ExtractedInfo,
+)
 
 FIELD_KEYS = [
     "overview",
@@ -30,14 +36,10 @@ FIELD_LABELS = {
 }
 
 RISK_ICONS = {
-    "禁止": "🚫",
-    "Prohibited": "🚫",
-    "高リスク": "🔴",
-    "High-Risk": "🔴",
-    "透明性": "🟠",
-    "Transparency": "🟠",
-    "限定": "🟡",
-    "Limited": "🟡",
+    "禁止": "🚫", "Prohibited": "🚫",
+    "高リスク": "🔴", "High-Risk": "🔴",
+    "透明性": "🟠", "Transparency": "🟠",
+    "限定": "🟡", "Limited": "🟡",
 }
 
 
@@ -78,12 +80,11 @@ def run_extraction(file_obj):
             gr.update(visible=False),
         )
 
-    status_msg = f"🔍 テキスト抽出完了（{len(minutes_text):,} 文字）。GPT-4oで解析中..."
-
     initial_state: AppState = {
         "minutes_text": minutes_text,
         "extracted": None,
         "edited": None,
+        "eu_ai_act_text": None,
         "risk": None,
         "error": None,
     }
@@ -110,7 +111,10 @@ def run_extraction(file_obj):
     values = [extracted.get(k, "") for k in FIELD_KEYS]
 
     return (
-        gr.update(value="✅ 情報抽出が完了しました。内容を確認・編集してからリスク評価を実行してください。", visible=True),
+        gr.update(
+            value="✅ 情報抽出が完了しました。内容を確認・編集してからリスク評価を実行してください。",
+            visible=True,
+        ),
         *values,
         gr.update(visible=True),   # edit_section
         gr.update(visible=False),  # result_section
@@ -120,10 +124,16 @@ def run_extraction(file_obj):
 # ── Step 2: Risk Assessment ───────────────────────────────────────────────────
 
 def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats, purposes):
-    """Run EU AI Act risk assessment on the edited fields."""
+    """
+    Sub-agent flow:
+      1. Fetch EU AI Act PDF from EUR-Lex (fetch_eu_ai_act node)
+      2. Extract Articles 5 / 6 / 50
+      3. LLM judges risk using ONLY the fetched text (risk_assess node)
+    """
     if not any([overview, users, data_subjects, input_cats, output_cats, purposes]):
         return (
             gr.update(value="⚠️ まずファイルをアップロードして情報を抽出してください。", visible=True),
+            gr.update(visible=False),
             gr.update(visible=False),
         )
 
@@ -140,6 +150,7 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
         "minutes_text": "",
         "extracted": None,
         "edited": edited,
+        "eu_ai_act_text": None,
         "risk": None,
         "error": None,
     }
@@ -150,15 +161,25 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
         return (
             gr.update(value=f"❌ リスク評価エラー: {e}", visible=True),
             gr.update(visible=False),
-        )
-
-    if result.get("error"):
-        return (
-            gr.update(value=f"❌ エラー: {result['error']}", visible=True),
             gr.update(visible=False),
         )
 
-    risk = result["risk"]
+    # Error from fetch or assess node
+    if result.get("error"):
+        return (
+            gr.update(value=f"❌ {result['error']}", visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+        )
+
+    risk = result.get("risk")
+    if not risk:
+        return (
+            gr.update(value="❌ リスク評価結果が得られませんでした。", visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+        )
+
     level = risk.get("risk_level", "不明")
     basis = risk.get("risk_basis", "")
     icon = get_risk_icon(level)
@@ -168,22 +189,23 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 ### リスクレベル
 **{level}**
 
-### 判定根拠（第6条中心）
+### 判定根拠
 
 {basis}
 
 ---
-### 参照条文
-- **第5条 (Article 5)**: Prohibited artificial intelligence practices
-- **第6条 (Article 6)**: Classification rules for high-risk AI systems
-- **第50条 (Article 50)**: Transparency obligations for providers and deployers
-
-*出典: EU AI Act — Regulation (EU) 2024/1689*
+*判定根拠: [EU AI Act — Regulation (EU) 2024/1689]({EU_AI_ACT_URL}) より取得した条文テキストのみを使用*
 """
 
+    fetched_summary = (
+        f"✅ EU AI Act PDFを取得・解析し、Article 5 / 6 / 50 を抽出しました。\n"
+        f"取得元: {EU_AI_ACT_URL}"
+    )
+
     return (
-        gr.update(value="✅ リスク評価が完了しました。", visible=True),
+        gr.update(value=fetched_summary, visible=True),
         gr.update(value=result_md, visible=True),
+        gr.update(visible=True),
     )
 
 
@@ -191,13 +213,6 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 
 CSS = """
 #title { text-align: center; }
-#status_box textarea { font-size: 14px; }
-.section-header { 
-    background: #1e293b; 
-    padding: 8px 16px; 
-    border-radius: 8px; 
-    margin: 8px 0; 
-}
 .field-box textarea { min-height: 80px; }
 """
 
@@ -208,19 +223,14 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
         """# 🤖 Agentic AI リスク評価ツール
 
 議事録ファイルから Agentic AI アプリケーション情報を抽出し、
-**EU AI Act（Regulation (EU) 2024/1689）** に基づくリスクレベルを判定します。
+**EU AI Act（Regulation (EU) 2024/1689）** の条文を直接参照してリスクレベルを判定します。
 
 ---""",
         elem_id="title",
     )
 
     # ── Status ────────────────────────────────────────────────────────────────
-    status = gr.Textbox(
-        label="ステータス",
-        interactive=False,
-        visible=False,
-        elem_id="status_box",
-    )
+    status = gr.Textbox(label="ステータス", interactive=False, visible=False)
 
     # ── Step 1: File Upload ───────────────────────────────────────────────────
     gr.Markdown("## 📁 ステップ 1 : 議事録ファイルのアップロード")
@@ -245,7 +255,7 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     with gr.Group(visible=False) as edit_section:
         gr.Markdown("## ✏️ ステップ 2 : 抽出結果の確認・編集")
         gr.Markdown(
-            "抽出された内容を確認し、必要に応じて編集してください。"
+            "抽出された内容を確認し、必要に応じて各フィールドを直接編集してください。"
             "編集後、**「リスク評価を実行する」** ボタンを押してください。"
         )
 
@@ -259,8 +269,13 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
             )
             field_boxes.append(tb)
 
+        gr.Markdown(
+            f"> ⚖️ リスク評価を実行すると、サブエージェントが "
+            f"[EU AI Act PDF]({EU_AI_ACT_URL}) を取得し、"
+            f"Article 5 / 6 / 50 の条文のみを根拠として判定します。"
+        )
         assess_btn = gr.Button(
-            "⚖️ リスク評価を実行する",
+            "⚖️ リスク評価を実行する（EU AI Act PDF を取得して判定）",
             variant="primary",
             size="lg",
         )
@@ -280,7 +295,7 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     assess_btn.click(
         fn=run_risk_assessment,
         inputs=field_boxes,
-        outputs=[status, result_section],
+        outputs=[status, result_md, result_section],
     )
 
 
