@@ -1,0 +1,1 @@
+- [Chainlit on Replit](chainlit-replit.md) — Chainlitアプリはabsolute pathとPYTHONPATH必須、asyncpgも必要

@@ -1,0 +1,15 @@
+[project]
+enable_telemetry = false
+
+[features]
+prompt_playground = false
+speech_to_text = false
+
+[UI]
+name = "Agentic AI リスク評価ツール"
+description = "議事録からAgentic AIアプリケーションの情報を抽出し、EU AI Actに基づくリスクレベルを判定します。"
+show_readme_as_default = false
+default_collapse_content = false
+
+[meta]
+generated_by = "1.3.2"
