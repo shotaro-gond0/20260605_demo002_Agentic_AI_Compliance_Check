@@ -19,6 +19,7 @@ from graph import (
     ExtractedInfo,
 )
 import vectorstore as vs
+from pdf_report import generate_pdf
 
 FIELD_KEYS = [
     "overview",
@@ -162,19 +163,20 @@ def run_extraction(file_obj):
 # ── Step 2: Risk Assessment ───────────────────────────────────────────────────
 
 def _no_yield(msg: str):
-    """Helper: single-yield tuple for early-exit error cases (4 outputs)."""
+    """Helper: single-yield tuple for early-exit error cases (5 outputs)."""
     return (
         gr.update(value=msg, visible=True),
         gr.update(value="", visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
+        None,  # report_state
     )
 
 
 def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats, purposes):
     """Generator: yields step-by-step status so the UI updates at each node boundary.
 
-    Outputs (4):  status | llm_status | result_md | result_section
+    Outputs (5):  status | llm_status | result_md | result_section | report_state
     Nodes called directly (not via risk_graph.invoke) to enable per-step yields:
       1. fetch_eu_ai_act_node — RAG retrieval from FAISS
       2. risk_assess_node     — GPT-4o API call
@@ -218,6 +220,7 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
         ),
         gr.update(visible=False),
         gr.update(visible=False),
+        None,
     )
 
     try:
@@ -243,6 +246,7 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
         ),
         gr.update(visible=False),
         gr.update(visible=False),
+        None,
     )
 
     try:
@@ -279,6 +283,17 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
 *出典: [Regulation (EU) 2024/1689]({EU_AI_ACT_URL})*
 """
 
+    report_state = {
+        "risk_level": level,
+        "risk_basis": basis,
+        "overview": overview,
+        "users": users,
+        "data_subjects": data_subjects,
+        "input_cats": input_cats,
+        "output_cats": output_cats,
+        "purposes": purposes,
+    }
+
     yield (
         gr.update(value="✅ リスク評価が完了しました。", visible=True),
         gr.update(
@@ -290,7 +305,43 @@ def run_risk_assessment(overview, users, data_subjects, input_cats, output_cats,
         ),
         gr.update(value=md, visible=True),
         gr.update(visible=True),
+        report_state,
     )
+
+
+# ── Step 3: PDF Download ───────────────────────────────────────────────────────
+
+def download_report(report_state):
+    """Generate a PDF report from the stored risk assessment state.
+
+    Returns (report_file, status) updates.
+    """
+    if not report_state:
+        return (
+            gr.update(visible=False),
+            gr.update(value="⚠️ レポートを生成する前にリスク評価を実行してください。", visible=True),
+        )
+    try:
+        path = generate_pdf(
+            risk_level=report_state.get("risk_level", "不明"),
+            risk_basis=report_state.get("risk_basis", ""),
+            overview=report_state.get("overview", ""),
+            users=report_state.get("users", ""),
+            data_subjects=report_state.get("data_subjects", ""),
+            input_cats=report_state.get("input_cats", ""),
+            output_cats=report_state.get("output_cats", ""),
+            purposes=report_state.get("purposes", ""),
+            eu_ai_act_url=EU_AI_ACT_URL,
+        )
+        return (
+            gr.update(value=path, visible=True),
+            gr.update(value="✅ PDFレポートを生成しました。", visible=True),
+        )
+    except Exception as e:
+        return (
+            gr.update(value=None, visible=False),
+            gr.update(value=f"❌ PDFレポートの生成に失敗しました: {e}", visible=True),
+        )
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
@@ -402,9 +453,25 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
         )
 
     # ── Step 3: Risk Result ───────────────────────────────────────────────────
+    report_state = gr.State(None)
+
     with gr.Group(visible=False) as result_section:
         gr.Markdown("## 📊 ステップ 3 : EU AI Act リスクレベル判定結果")
         result_md = gr.Markdown()
+
+        with gr.Row():
+            download_btn = gr.Button(
+                "📥 レポートをダウンロード（PDF）",
+                variant="secondary",
+                scale=1,
+                min_width=220,
+            )
+
+        report_file = gr.File(
+            label="生成されたPDFレポート",
+            visible=False,
+            interactive=False,
+        )
 
     # ── Event Bindings ────────────────────────────────────────────────────────
     update_btn.click(
@@ -422,7 +489,13 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
     assess_btn.click(
         fn=run_risk_assessment,
         inputs=field_boxes,
-        outputs=[status, llm_status, result_md, result_section],
+        outputs=[status, llm_status, result_md, result_section, report_state],
+    )
+
+    download_btn.click(
+        fn=download_report,
+        inputs=[report_state],
+        outputs=[report_file, status],
     )
 
 
