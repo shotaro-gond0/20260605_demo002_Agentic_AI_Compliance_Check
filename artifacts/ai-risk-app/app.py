@@ -331,7 +331,11 @@ with gr.Blocks(title="Agentic AI リスク評価ツール") as demo:
         )
         update_status = gr.Textbox(
             label="登録ステータス",
-            value="⚠️ 未登録 — 「🔄 EU AI Actの情報を更新する」を押してください。",
+            value=(
+                "✅ 既存インデックスを読み込みました — すぐにリスク評価が利用可能です。"
+                if vs.was_loaded_from_disk()
+                else "⚠️ 未登録 — 「🔄 EU AI Actの情報を更新する」を押してください。"
+            ),
             interactive=False,
             scale=3,
             visible=True,

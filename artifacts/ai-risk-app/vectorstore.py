@@ -1,20 +1,26 @@
-"""In-memory FAISS vector store for the EU AI Act document.
+"""FAISS vector store for the EU AI Act document.
 
 Lifecycle:
-  build_from_url()  — called from the Gradio "更新" button handler.
-                      Fetches the PDF, splits into chunks, embeds, and
-                      stores in a module-level FAISS index.
-                      Calling again clears and rebuilds from scratch.
+  Module import   — tries to load a previously saved index from FAISS_INDEX_DIR.
+                    If found, is_ready() returns True immediately without any
+                    network access or re-embedding.
+
+  build_from_url() — called from the Gradio "更新" button handler.
+                     Fetches the PDF, splits into chunks, embeds, saves the
+                     index to disk, and stores it in the module-level singleton.
+                     Calling again clears and rebuilds from scratch.
 
   retrieve(queries) — called by the LangGraph fetch_eu_ai_act_node.
                       Runs multiple similarity searches and returns
                       deduplicated chunks as a single string.
 
-  is_ready()        — returns True once the index has been built.
+  is_ready()        — returns True once the index has been built or loaded.
+  was_loaded_from_disk() — returns True if the index was auto-loaded at import.
 """
 from __future__ import annotations
 
 import io
+import os
 from typing import Optional
 
 import httpx
@@ -27,11 +33,48 @@ EU_AI_ACT_URL = (
     "https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=OJ:L_202401689"
 )
 
-# Module-level singleton — rebuilt every time the user clicks "更新"
+FAISS_INDEX_DIR = "/tmp/eu_ai_act_faiss"
+
 _vectorstore: Optional[FAISS] = None
+_loaded_from_disk: bool = False
 
 
-# ── PDF helpers ───────────────────────────────────────────────────────────────
+# ── Disk helpers ───────────────────────────────────────────────────────────────
+
+def _save_to_disk(store: FAISS) -> None:
+    os.makedirs(FAISS_INDEX_DIR, exist_ok=True)
+    store.save_local(FAISS_INDEX_DIR)
+
+
+def _load_from_disk() -> Optional[FAISS]:
+    index_file = os.path.join(FAISS_INDEX_DIR, "index.faiss")
+    if not os.path.exists(index_file):
+        return None
+    try:
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        return FAISS.load_local(
+            FAISS_INDEX_DIR,
+            embeddings,
+            allow_dangerous_deserialization=True,
+        )
+    except Exception:
+        return None
+
+
+# ── Auto-load at import time ───────────────────────────────────────────────────
+
+def _try_auto_load() -> None:
+    global _vectorstore, _loaded_from_disk
+    store = _load_from_disk()
+    if store is not None:
+        _vectorstore = store
+        _loaded_from_disk = True
+
+
+_try_auto_load()
+
+
+# ── PDF helpers ────────────────────────────────────────────────────────────────
 
 def _fetch_pdf_bytes(url: str) -> tuple[bytes, str | None]:
     try:
@@ -63,13 +106,13 @@ def _pdf_bytes_to_text(data: bytes) -> tuple[str, str | None]:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def build_from_url() -> tuple[int, str | None]:
-    """Fetch EU AI Act PDF and (re)build the FAISS index.
+    """Fetch EU AI Act PDF, (re)build the FAISS index, and save it to disk.
 
     Returns:
         (chunk_count, None)  on success
         (0, error_message)   on failure
     """
-    global _vectorstore
+    global _vectorstore, _loaded_from_disk
 
     pdf_bytes, err = _fetch_pdf_bytes(EU_AI_ACT_URL)
     if err:
@@ -89,7 +132,11 @@ def build_from_url() -> tuple[int, str | None]:
         return 0, "テキストのチャンク分割に失敗しました。"
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    _vectorstore = FAISS.from_documents(docs, embeddings)
+    store = FAISS.from_documents(docs, embeddings)
+
+    _save_to_disk(store)
+    _vectorstore = store
+    _loaded_from_disk = False
 
     return len(docs), None
 
@@ -118,5 +165,10 @@ def retrieve(queries: list[str], k_per_query: int = 6) -> str:
 
 
 def is_ready() -> bool:
-    """True if the vector store has been built."""
+    """True if the vector store has been built or loaded from disk."""
     return _vectorstore is not None
+
+
+def was_loaded_from_disk() -> bool:
+    """True if the vector store was auto-loaded from a saved index at startup."""
+    return _loaded_from_disk
