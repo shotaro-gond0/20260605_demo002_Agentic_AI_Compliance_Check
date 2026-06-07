@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "bgwwajnEHnpNnlZM3d3c0"
+uri = "file://artifacts/ai-risk-app/flowchart.md"
+type = "text"
+title = "システムフローチャート (Mermaid)"
