@@ -1,8 +1,25 @@
 uploads = []
-generated = []
+
+[[generated]]
+id = "N9Za7WPCP5aHa_0NiosJ-"
+uri = "file://artifacts/project-video/public/images/tech-bg.png"
+type = "image"
+title = "Dark tech data grid"
+
+[[generated]]
+id = "_SaZGg9gbiwnyt_Dte2cH"
+uri = "file://artifacts/project-video/public/images/secure-lock.png"
+type = "image"
+title = "Glowing secure lock icon"
 
 [[outputs]]
 id = "bgwwajnEHnpNnlZM3d3c0"
 uri = "file://artifacts/ai-risk-app/flowchart.md"
 type = "text"
 title = "システムフローチャート (Mermaid)"
+
+[[outputs]]
+id = "P9EmtFrtvv2SsLdwk943g"
+uri = "file://artifacts/project-video/public/audio/bg_music.mp3"
+type = "audio"
+title = "background music"
