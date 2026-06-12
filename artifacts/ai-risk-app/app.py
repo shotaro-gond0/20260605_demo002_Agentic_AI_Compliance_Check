@@ -357,13 +357,19 @@ def download_report(report_state):
         )
         return
 
-    # ── Step 2: ダウンロードリンク生成 ────────────────────────────────────────
+    # ── Step 2: ダウンロードリンク生成（Base64 Data URI）─────────────────────
+    # /file= エンドポイントは本番リバースプロキシで機能しないため、
+    # PDF をメモリに読み込んで data URI として直接埋め込む。
     import os as _os
+    import base64 as _b64
     filename = _os.path.basename(path)
+    with open(path, "rb") as _f:
+        pdf_b64 = _b64.b64encode(_f.read()).decode()
+    data_uri = f"data:application/pdf;base64,{pdf_b64}"
     download_html = (
         f'<div style="padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;'
         f'border-radius:8px;margin-top:4px;">'
-        f'<a href="/file={path}" download="{filename}" '
+        f'<a href="{data_uri}" download="{filename}" '
         f'style="color:#0369a1;text-decoration:none;font-weight:600;'
         f'display:flex;align-items:center;gap:8px;font-size:1em;">'
         f'📄 {filename}'
